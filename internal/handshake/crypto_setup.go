@@ -16,6 +16,7 @@ import (
 	"github.com/sagernet/quic-go/internal/wire"
 	"github.com/sagernet/quic-go/qlog"
 	"github.com/sagernet/quic-go/qlogwriter"
+	"github.com/sagernet/quic-go/qtls"
 	"github.com/sagernet/quic-go/quicvarint"
 )
 
@@ -27,7 +28,7 @@ const clientSessionStateRevision = 5
 
 type cryptoSetup struct {
 	tlsConf *tls.Config
-	conn    *tls.QUICConn
+	conn    quicTLSConn
 
 	events []Event
 
@@ -66,11 +67,42 @@ type cryptoSetup struct {
 
 var _ CryptoSetup = &cryptoSetup{}
 
+type quicTLSConn interface {
+	Start(context.Context) error
+	NextEvent() qtls.Event
+	HandleData(tls.QUICEncryptionLevel, []byte) error
+	SetTransportParameters([]byte)
+	Close() error
+	ConnectionState() tls.ConnectionState
+}
+
+type quicTLSSessionConn interface {
+	StoreSession(*tls.SessionState) error
+	SendSessionTicket(tls.QUICSessionTicketOptions) error
+}
+
+type stdQUICConn struct {
+	*tls.QUICConn
+}
+
+func (c stdQUICConn) NextEvent() qtls.Event {
+	ev := c.QUICConn.NextEvent()
+	return qtls.Event{
+		Kind:         ev.Kind,
+		Level:        ev.Level,
+		Data:         ev.Data,
+		Suite:        ev.Suite,
+		SessionState: ev.SessionState,
+		Err:          ev.Err,
+	}
+}
+
 // NewCryptoSetupClient creates a new crypto setup for the client
 func NewCryptoSetupClient(
 	connID protocol.ConnectionID,
 	tp *wire.TransportParameters,
 	tlsConf *tls.Config,
+	qtlsFactory qtls.Factory,
 	enable0RTT bool,
 	rttStats *utils.RTTStats,
 	qlogger qlogwriter.Recorder,
@@ -92,10 +124,14 @@ func NewCryptoSetupClient(
 	cs.tlsConf = tlsConf
 	cs.allow0RTT = enable0RTT
 
-	cs.conn = tls.QUICClient(&tls.QUICConfig{
-		TLSConfig:           tlsConf,
-		EnableSessionEvents: true,
-	})
+	if qtlsFactory != nil {
+		cs.conn = qtlsFactory.Client(&tls.QUICConfig{TLSConfig: tlsConf})
+	} else {
+		cs.conn = stdQUICConn{tls.QUICClient(&tls.QUICConfig{
+			TLSConfig:           tlsConf,
+			EnableSessionEvents: true,
+		})}
+	}
 	cs.conn.SetTransportParameters(cs.ourParams.Marshal(protocol.PerspectiveClient))
 
 	return cs
@@ -107,6 +143,7 @@ func NewCryptoSetupServer(
 	localAddr, remoteAddr net.Addr,
 	tp *wire.TransportParameters,
 	tlsConf *tls.Config,
+	qtlsFactory qtls.Factory,
 	allow0RTT bool,
 	rttStats *utils.RTTStats,
 	qlogger qlogwriter.Recorder,
@@ -127,10 +164,14 @@ func NewCryptoSetupServer(
 	tlsConf = setupConfigForServer(tlsConf, localAddr, remoteAddr)
 
 	cs.tlsConf = tlsConf
-	cs.conn = tls.QUICServer(&tls.QUICConfig{
-		TLSConfig:           tlsConf,
-		EnableSessionEvents: true,
-	})
+	if qtlsFactory != nil {
+		cs.conn = qtlsFactory.Server(&tls.QUICConfig{TLSConfig: tlsConf})
+	} else {
+		cs.conn = stdQUICConn{tls.QUICServer(&tls.QUICConfig{
+			TLSConfig:           tlsConf,
+			EnableSessionEvents: true,
+		})}
+	}
 	return cs
 }
 
@@ -268,6 +309,10 @@ func (h *cryptoSetup) handleEvent(ev tls.QUICEvent) (err error) {
 		h.handshakeComplete()
 		return nil
 	case tls.QUICStoreSession:
+		sessionConn, ok := h.conn.(quicTLSSessionConn)
+		if !ok || ev.SessionState == nil {
+			return nil
+		}
 		if h.perspective == protocol.PerspectiveServer {
 			panic("cryptoSetup BUG: unexpected QUICStoreSession event for the server")
 		}
@@ -275,8 +320,11 @@ func (h *cryptoSetup) handleEvent(ev tls.QUICEvent) (err error) {
 			ev.SessionState.Extra,
 			addSessionStateExtraPrefix(h.marshalDataForSessionState(ev.SessionState.EarlyData)),
 		)
-		return h.conn.StoreSession(ev.SessionState)
+		return sessionConn.StoreSession(ev.SessionState)
 	case tls.QUICResumeSession:
+		if ev.SessionState == nil {
+			return nil
+		}
 		var allowEarlyData bool
 		switch h.perspective {
 		case protocol.PerspectiveClient:
@@ -379,7 +427,11 @@ func (h *cryptoSetup) getDataForSessionTicket() []byte {
 // Due to limitations in crypto/tls, it's only possible to generate a single session ticket per connection.
 // It is only valid for the server.
 func (h *cryptoSetup) GetSessionTicket() ([]byte, error) {
-	if err := h.conn.SendSessionTicket(tls.QUICSessionTicketOptions{
+	sessionConn, ok := h.conn.(quicTLSSessionConn)
+	if !ok {
+		return nil, nil
+	}
+	if err := sessionConn.SendSessionTicket(tls.QUICSessionTicketOptions{
 		EarlyData: h.allow0RTT,
 		Extra:     [][]byte{addSessionStateExtraPrefix(h.getDataForSessionTicket())},
 	}); err != nil {

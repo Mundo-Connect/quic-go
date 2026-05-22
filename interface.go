@@ -11,6 +11,7 @@ import (
 	"github.com/sagernet/quic-go/internal/handshake"
 	"github.com/sagernet/quic-go/internal/protocol"
 	"github.com/sagernet/quic-go/qlogwriter"
+	"github.com/sagernet/quic-go/qtls"
 )
 
 // The StreamID is the ID of a QUIC stream.
@@ -97,6 +98,9 @@ type Config struct {
 	// GetConfigForClient is called for incoming connections.
 	// If the error is not nil, the connection attempt is refused.
 	GetConfigForClient func(info *ClientInfo) (*Config, error)
+	// QUICTLSFactory overrides the TLS state machine used for QUIC handshakes.
+	// If nil, crypto/tls is used.
+	QUICTLSFactory qtls.Factory
 	// The QUIC versions that can be negotiated.
 	// If not set, it uses all versions available.
 	Versions []Version

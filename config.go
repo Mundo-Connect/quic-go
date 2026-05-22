@@ -107,6 +107,7 @@ func populateConfig(config *Config) *Config {
 
 	return &Config{
 		GetConfigForClient:               config.GetConfigForClient,
+		QUICTLSFactory:                   config.QUICTLSFactory,
 		Versions:                         versions,
 		HandshakeIdleTimeout:             handshakeIdleTimeout,
 		MaxIdleTimeout:                   idleTimeout,
