@@ -284,7 +284,7 @@ func (h *cryptoSetup) handleMessage(data []byte, encLevel protocol.EncryptionLev
 	}
 }
 
-func (h *cryptoSetup) handleEvent(ev tls.QUICEvent) (err error) {
+func (h *cryptoSetup) handleEvent(ev qtls.Event) (err error) {
 	switch ev.Kind {
 	case tls.QUICNoEvent:
 		return nil
