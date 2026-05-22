@@ -93,7 +93,6 @@ func (c stdQUICConn) NextEvent() qtls.Event {
 		Data:         ev.Data,
 		Suite:        ev.Suite,
 		SessionState: ev.SessionState,
-		Err:          ev.Err,
 	}
 }
 
@@ -308,6 +307,11 @@ func (h *cryptoSetup) handleEvent(ev qtls.Event) (err error) {
 	case tls.QUICHandshakeDone:
 		h.handshakeComplete()
 		return nil
+	case qtls.QUICErrorEvent:
+		if ev.Err != nil {
+			return ev.Err
+		}
+		return errors.New("tls: QUIC handshake failed")
 	case tls.QUICStoreSession:
 		sessionConn, ok := h.conn.(quicTLSSessionConn)
 		if !ok || ev.SessionState == nil {

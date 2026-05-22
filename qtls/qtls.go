@@ -15,6 +15,8 @@ type Event struct {
 	Err          error
 }
 
+const QUICErrorEvent tls.QUICEventKind = 10
+
 // Conn is a QUIC TLS state machine.
 type Conn interface {
 	Start(context.Context) error
